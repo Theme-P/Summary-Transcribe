@@ -1,0 +1,13 @@
+version: '2.4'
+
+services:
+  whisperx:
+    build: .
+    container_name: whisperx
+    stdin_open: true
+    tty: true
+    runtime: nvidia
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    volumes:
+      - ./audio:/app/audio

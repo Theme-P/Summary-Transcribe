@@ -1,0 +1,12 @@
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.wav
+*.mp3
+*.m4a
+uploads/*
+!uploads/.gitkeep
+.git
+.gitignore
+*.md
