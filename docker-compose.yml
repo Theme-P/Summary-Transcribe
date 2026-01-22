@@ -9,5 +9,6 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - HF_TOKEN=${HF_TOKEN}
     volumes:
       - ./audio:/app/audio
