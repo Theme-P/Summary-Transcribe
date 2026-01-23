@@ -26,8 +26,9 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy script
+# Copy scripts
 COPY Whisper_Test.py .
+COPY "Summary Model.py" .
 
 # Create audio directory
 RUN mkdir -p /app/audio
