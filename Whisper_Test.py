@@ -1,6 +1,10 @@
 import torch
 import gc
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Fix for PyTorch 2.6+ compatibility with pyannote
 # Must patch torch.load BEFORE importing whisperx/pyannote
