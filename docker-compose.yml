@@ -1,5 +1,3 @@
-version: '2.4'
-
 services:
   whisperx:
     build: .
@@ -9,10 +7,6 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
-      - HF_TOKEN=${HF_TOKEN}
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-      - NTC_API_KEY=${NTC_API_KEY}
-      - NTC_API_URL=${NTC_API_URL}
     volumes:
       - ./audio:/app/audio
     env_file:

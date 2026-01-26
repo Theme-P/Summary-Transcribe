@@ -83,15 +83,3 @@ def summarize_from_whisperx_result(result: dict) -> str:
     
     return summarize_transcription(full_text)
 
-
-# Example usage
-if __name__ == "__main__":
-    # Test with sample text
-    sample_text = """
-    นี่คือตัวอย่างข้อความที่ได้จาก WhisperX
-    สามารถนำมาสรุปใจความสำคัญได้
-    """
-    
-    print("Testing GPT-4o Summarization via NTC AI Gateway...")
-    summary = summarize_transcription(sample_text)
-    print(f"\nSummary:\n{summary}")

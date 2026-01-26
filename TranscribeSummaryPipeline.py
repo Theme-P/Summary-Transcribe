@@ -1,0 +1,416 @@
+"""
+TranscribeSummaryPipeline.py
+Combined WhisperX Transcription + GPT-4o Summary Pipeline
+
+Output:
+1. Full transcript with timestamps and speaker diarization
+2. Summary generated from the transcript using GPT-4o
+"""
+
+import torch
+import gc
+import os
+import time
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Dict, Any, Optional
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
+
+# Fix for PyTorch 2.6+ compatibility with pyannote
+_original_torch_load = torch.load
+def _patched_torch_load(*args, **kwargs):
+    kwargs['weights_only'] = False
+    return _original_torch_load(*args, **kwargs)
+torch.load = _patched_torch_load
+
+import whisperx
+from SummaryModel import summarize_transcription
+
+
+# ===================== CONFIGURATION =====================
+class PipelineConfig:
+    """Configuration for the transcription-summary pipeline"""
+    
+    # Device settings
+    DEVICE = "cuda"
+    COMPUTE_TYPE = "float16"
+    
+    # WhisperX settings
+    MODEL_NAME = "large-v3"
+    BATCH_SIZE = 24
+    LANGUAGE = "th"
+    
+    # Beam search settings
+    BEAM_SIZE = 5
+    BEST_OF = 5
+    PATIENCE = 1.5
+    
+    # VAD options
+    VAD_ONSET = 0.500
+    VAD_OFFSET = 0.363
+    MIN_DURATION_ON = 0.1
+    MIN_DURATION_OFF = 0.1
+    
+    # HuggingFace token for diarization
+    HF_TOKEN = os.environ.get("HF_TOKEN", "")
+
+
+# ===================== UTILITY FUNCTIONS =====================
+def format_speaker(speaker: Optional[str]) -> str:
+    """Format speaker label to Thai"""
+    if speaker and speaker.startswith('SPEAKER_'):
+        num = int(speaker.split('_')[1]) + 1
+        return f"คนพูด {num}"
+    return speaker or "Unknown"
+
+
+def format_time(seconds: float) -> str:
+    """Format seconds to MM:SS.ms"""
+    m = int(seconds // 60)
+    s = int(seconds % 60)
+    ms = int((seconds % 1) * 100)
+    return f"{m:02d}:{s:02d}.{ms:02d}"
+
+
+def clear_gpu_memory():
+    """Clear GPU memory"""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+
+
+# ===================== WHISPERX TRANSCRIBER =====================
+class WhisperXTranscriber:
+    """Handles WhisperX transcription with speaker diarization"""
+    
+    def __init__(self, config: PipelineConfig = None):
+        self.config = config or PipelineConfig()
+        self.model = None
+        self.timing = {}
+    
+    def load_model(self):
+        """Load WhisperX model"""
+        print("🔄 Loading WhisperX model...")
+        start = time.time()
+        
+        self.model = whisperx.load_model(
+            self.config.MODEL_NAME,
+            self.config.DEVICE,
+            compute_type=self.config.COMPUTE_TYPE,
+            language=self.config.LANGUAGE,
+            asr_options={
+                "beam_size": self.config.BEAM_SIZE,
+                "best_of": self.config.BEST_OF,
+                "patience": self.config.PATIENCE,
+                "condition_on_previous_text": True,
+                "temperatures": [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+                "compression_ratio_threshold": 2.2,
+                "log_prob_threshold": -0.8,
+                "no_speech_threshold": 0.5,
+                "initial_prompt": "สวัสดีครับ นี่คือการถอดเสียงภาษาไทย",
+                "repetition_penalty": 1.1,
+                "length_penalty": 1.0,
+            },
+            vad_options={
+                "vad_onset": self.config.VAD_ONSET,
+                "vad_offset": self.config.VAD_OFFSET,
+                "min_duration_on": self.config.MIN_DURATION_ON,
+                "min_duration_off": self.config.MIN_DURATION_OFF,
+            },
+        )
+        
+        self.timing['model_load'] = time.time() - start
+        print(f"   ⏱️ Model loaded: {self.timing['model_load']:.2f}s")
+    
+    def transcribe(self, audio_file: str) -> Dict[str, Any]:
+        """
+        Transcribe audio file with speaker diarization.
+        Returns result dict and combined text for summary.
+        """
+        if self.model is None:
+            self.load_model()
+        
+        # Load audio
+        print("🔄 Loading audio...")
+        start = time.time()
+        audio = whisperx.load_audio(audio_file)
+        self.timing['audio_load'] = time.time() - start
+        print(f"   ⏱️ Audio loaded: {self.timing['audio_load']:.2f}s")
+        
+        # Transcribe
+        print("🎯 Transcribing...")
+        start = time.time()
+        result = self.model.transcribe(
+            audio,
+            batch_size=self.config.BATCH_SIZE,
+            language=self.config.LANGUAGE,
+            task="transcribe",
+        )
+        self.timing['transcription'] = time.time() - start
+        print(f"   ⏱️ Transcription: {self.timing['transcription']:.2f}s")
+        
+        # Extract combined text BEFORE clearing model (for parallel summary)
+        combined_text = ' '.join(
+            seg.get('text', '').strip() 
+            for seg in result.get('segments', [])
+        )
+        
+        # Clear model to free VRAM for diarization
+        del self.model
+        self.model = None
+        clear_gpu_memory()
+        
+        # Speaker diarization
+        print("👥 Running speaker diarization...")
+        start = time.time()
+        diarize_model = whisperx.diarize.DiarizationPipeline(
+            use_auth_token=self.config.HF_TOKEN,
+            device=self.config.DEVICE
+        )
+        diarize_segments = diarize_model(audio)
+        self.timing['diarization'] = time.time() - start
+        print(f"   ⏱️ Diarization: {self.timing['diarization']:.2f}s")
+        
+        # Assign speakers
+        result = whisperx.assign_word_speakers(diarize_segments, result)
+        
+        # Clear diarization model
+        del diarize_model
+        clear_gpu_memory()
+        
+        # Calculate audio length
+        audio_length = len(audio) / 16000  # 16kHz sample rate
+        
+        return {
+            'result': result,
+            'combined_text': combined_text,
+            'audio_length': audio_length,
+            'timing': self.timing.copy()
+        }
+
+
+# ===================== COMBINED PIPELINE =====================
+class TranscribeSummaryPipeline:
+    """
+    Combined pipeline that runs WhisperX transcription and GPT-4o summarization.
+    Optimized to run summary in parallel with diarization.
+    """
+    
+    def __init__(self, config: PipelineConfig = None):
+        self.config = config or PipelineConfig()
+        self.transcriber = WhisperXTranscriber(self.config)
+    
+    def _summarize_async(self, text: str) -> Dict[str, Any]:
+        """Run summarization and return result with timing"""
+        start = time.time()
+        summary = summarize_transcription(text)
+        elapsed = time.time() - start
+        return {'summary': summary, 'time': elapsed}
+    
+    def process(self, audio_file: str) -> Dict[str, Any]:
+        """
+        Process audio file: transcribe and summarize.
+        
+        Returns structured output with:
+        - Full transcript with segments
+        - Summary
+        - Processing times
+        """
+        total_start = time.time()
+        
+        print("=" * 60)
+        print("🚀 TranscribeSummaryPipeline - Starting")
+        print("=" * 60)
+        print(f"📁 Audio file: {audio_file}")
+        print()
+        
+        # Load model first
+        self.transcriber.load_model()
+        
+        # Transcribe (this clears model and runs diarization internally)
+        # But we need to start summary in parallel with diarization
+        # So we'll modify the flow slightly
+        
+        # Step 1: Load audio and transcribe
+        print("🔄 Loading audio...")
+        audio_start = time.time()
+        audio = whisperx.load_audio(audio_file)
+        audio_time = time.time() - audio_start
+        print(f"   ⏱️ Audio loaded: {audio_time:.2f}s")
+        
+        print("🎯 Transcribing...")
+        trans_start = time.time()
+        result = self.transcriber.model.transcribe(
+            audio,
+            batch_size=self.config.BATCH_SIZE,
+            language=self.config.LANGUAGE,
+            task="transcribe",
+        )
+        trans_time = time.time() - trans_start
+        print(f"   ⏱️ Transcription: {trans_time:.2f}s")
+        
+        # Extract text for summary
+        combined_text = ' '.join(
+            seg.get('text', '').strip() 
+            for seg in result.get('segments', [])
+        )
+        
+        # Clear transcription model
+        del self.transcriber.model
+        self.transcriber.model = None
+        clear_gpu_memory()
+        
+        # Step 2: Run diarization and summary IN PARALLEL
+        print("⚡ Starting parallel processing: Diarization + Summary API")
+        
+        summary_result = {'summary': '', 'time': 0}
+        diarize_time = 0
+        
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            # Start summary in background
+            summary_future = executor.submit(self._summarize_async, combined_text)
+            
+            # Run diarization in main thread (needs GPU)
+            print("👥 Running speaker diarization...")
+            diarize_start = time.time()
+            diarize_model = whisperx.diarize.DiarizationPipeline(
+                use_auth_token=self.config.HF_TOKEN,
+                device=self.config.DEVICE
+            )
+            diarize_segments = diarize_model(audio)
+            diarize_time = time.time() - diarize_start
+            print(f"   ⏱️ Diarization: {diarize_time:.2f}s")
+            
+            # Assign speakers
+            result = whisperx.assign_word_speakers(diarize_segments, result)
+            
+            # Clear diarization model
+            del diarize_model
+            clear_gpu_memory()
+            
+            # Wait for summary to complete
+            print("⏳ Waiting for summary...")
+            summary_result = summary_future.result()
+            print(f"   ⏱️ Summary API: {summary_result['time']:.2f}s")
+        
+        total_time = time.time() - total_start
+        
+        # Calculate audio length and speed
+        audio_length = len(audio) / 16000
+        speed_factor = audio_length / total_time if total_time > 0 else 0
+        
+        # Build speaker summary
+        segments = sorted(result.get('segments', []), key=lambda x: x['start'])
+        speakers_time = {}
+        speakers_words = {}
+        
+        for segment in segments:
+            speaker = format_speaker(segment.get('speaker'))
+            duration = segment['end'] - segment['start']
+            word_count = len(segment.get('text', '').split())
+            speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
+            speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
+        
+        # Build output
+        output = {
+            'audio_file': audio_file,
+            'processing_time': {
+                'model_load': self.transcriber.timing.get('model_load', 0),
+                'audio_load': audio_time,
+                'transcription': trans_time,
+                'diarization': diarize_time,
+                'summarization': summary_result['time'],
+                'total': total_time,
+            },
+            'audio_length_seconds': audio_length,
+            'speed_factor': speed_factor,
+            'full_transcript': {
+                'segments': segments,
+                'combined_text': combined_text,
+                'speaker_summary': {
+                    'speaking_time': speakers_time,
+                    'word_count': speakers_words,
+                }
+            },
+            'summary': summary_result['summary'],
+        }
+        
+        return output
+    
+    def print_results(self, output: Dict[str, Any]):
+        """Pretty print the results"""
+        print("\n" + "=" * 60)
+        print("📊 PROCESSING SUMMARY")
+        print("=" * 60)
+        
+        pt = output['processing_time']
+        print(f"⏱️ Total processing time: {pt['total']:.2f}s")
+        print(f"   - Model load: {pt['model_load']:.2f}s")
+        print(f"   - Audio load: {pt['audio_load']:.2f}s")
+        print(f"   - Transcription: {pt['transcription']:.2f}s")
+        print(f"   - Diarization: {pt['diarization']:.2f}s")
+        print(f"   - Summarization: {pt['summarization']:.2f}s")
+        print(f"   - Audio length: {output['audio_length_seconds']:.1f}s")
+        print(f"   - Speed: {output['speed_factor']:.1f}x realtime")
+        
+        # Transcription results
+        print("\n" + "=" * 60)
+        print("📝 FULL TRANSCRIPT")
+        print("=" * 60)
+        print(f"{'เวลาเริ่ม':<10} {'เวลาจบ':<10} {'คนพูด':<12} {'ข้อความ'}")
+        print("-" * 60)
+        
+        for segment in output['full_transcript']['segments']:
+            speaker = format_speaker(segment.get('speaker'))
+            text = segment.get('text', '').strip()
+            start = format_time(segment['start'])
+            end = format_time(segment['end'])
+            print(f"{start:<10} {end:<10} {speaker:<12} {text}")
+        
+        # Speaker summary
+        print("\n" + "=" * 60)
+        print("📈 SPEAKER SUMMARY")
+        print("=" * 60)
+        
+        speakers_time = output['full_transcript']['speaker_summary']['speaking_time']
+        speakers_words = output['full_transcript']['speaker_summary']['word_count']
+        total_time = sum(speakers_time.values())
+        
+        for speaker, speaking_time in sorted(speakers_time.items()):
+            pct = (speaking_time / total_time * 100) if total_time > 0 else 0
+            words = speakers_words.get(speaker, 0)
+            print(f"  {speaker}: {format_time(speaking_time)} ({pct:.1f}%) - {words} words")
+        
+        # Combined text
+        print("\n" + "=" * 60)
+        print("📋 COMBINED TEXT")
+        print("=" * 60)
+        print(output['full_transcript']['combined_text'])
+        
+        # Summary
+        print("\n" + "=" * 60)
+        print("🤖 AI SUMMARY (GPT-4o)")
+        print("=" * 60)
+        print(output['summary'])
+        
+        print("\n" + "=" * 60)
+        print("✅ Pipeline completed successfully!")
+        print("=" * 60)
+
+
+# ===================== MAIN =====================
+if __name__ == "__main__":
+    # Get audio file from user
+    audio_file = input("📁 กรุณาใส่ path ไฟล์เสียง: ").strip().strip('"').strip("'")
+    
+    if not os.path.exists(audio_file):
+        print(f"❌ Error: File not found: {audio_file}")
+        exit(1)
+    
+    # Run pipeline
+    pipeline = TranscribeSummaryPipeline()
+    output = pipeline.process(audio_file)
+    pipeline.print_results(output)

@@ -28,10 +28,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy scripts
 COPY Whisper_Test.py .
-COPY "Summary Model.py" .
+COPY SummaryModel.py .
+COPY TranscribeSummaryPipeline.py .
 
 # Create audio directory
 RUN mkdir -p /app/audio
 
-# Set entrypoint
-ENTRYPOINT ["python", "Whisper_Test.py"]
+# Default to bash for flexibility (can run any script)
+CMD ["bash"]
