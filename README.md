@@ -10,7 +10,24 @@ Thai speech-to-text using WhisperX with speaker diarization + GPT-4o summarizati
 - 🇹🇭 Thai language support
 - 🤖 **AI Summary** - สรุปใจความสำคัญด้วย GPT-4o
 - 🐳 Docker ready (CUDA/GPU)
-- ⚡ **Parallel Processing** - รัน Summary ขนานกับ Diarization
+- 👥 **Speaker Analysis** - วิเคราะห์บทบาทผู้พูดอัตโนมัติ
+- 📋 **Auto Meeting Type Detection** - ระบุประเภทการประชุม 11 รูปแบบ
+
+## 🎯 Supported Meeting Types
+
+| ประเภท | English | โครงสร้างหลัก |
+|--------|---------|--------------|
+| ประชุมผู้ถือหุ้น | Shareholder Meeting | วาระ → มติ → เงินปันผล |
+| ประชุมคณะกรรมการ | Board Meeting | นโยบาย → การอนุมัติ → มติ |
+| ประชุมวางแผน | Planning Meeting | เป้าหมาย → แผนงาน → ไทม์ไลน์ |
+| รายงานความคืบหน้า | Progress Update | สถานะ → ปัญหา → แนวทางแก้ |
+| ประชุมเชิงกลยุทธ์ | Strategy Meeting | ทิศทาง → กลยุทธ์ → Action Plan |
+| ประชุมแก้ไขปัญหา | Incident Review | ปัญหา → สาเหตุ → การป้องกัน |
+| ประชุมลูกค้า | Client Meeting | ข้อเสนอ → Feedback → Next Steps |
+| เชิงปฏิบัติการ | Workshop | หัวข้อ → บทเรียน → Action Items |
+| ประชุมผู้บริหาร | Executive Meeting | การตัดสินใจ → มติ |
+| ประชุมทีมงาน | Team Meeting | อัพเดต → มอบหมาย → ปัญหา |
+| ประชุมทั่วไป | General Meeting | วาระ → หารือ → มติ |
 
 ## 🚀 Quick Start
 
@@ -50,7 +67,22 @@ python Whisper_Test.py
 📝 FULL TRANSCRIPT      → Timestamped transcript with speakers
 📈 SPEAKER SUMMARY      → Speaking time per person
 📋 COMBINED TEXT        → Full text without timestamps
-🤖 AI SUMMARY           → GPT-4o generated summary
+🤖 AI SUMMARY           → GPT-4o summary with speaker analysis
+```
+
+### AI Summary Output
+```
+**[Progress Update]: การประชุมติดตามโครงการ**
+
+**👥 ผู้เข้าร่วมประชุม (3 คน):**
+- คนพูด 1 (ประธาน): ดำเนินการประชุม, สรุปมติ
+- คนพูด 2 (ผู้นำเสนอ EA): รายงานความคืบหน้าทีม EA
+- คนพูด 3 (ผู้นำเสนอ IAM): รายงานความคืบหน้าทีม IAM
+
+**📋 สรุปการประชุม:**
+- สถานะ: ...
+- ปัญหา: ...
+- มติ: ...
 ```
 
 ## ⚙️ Configuration
@@ -81,6 +113,8 @@ whisperx-prompt-customize/
 ├── TranscribeSummaryPipeline.py  # Combined transcription + summary
 ├── Whisper_Test.py               # Transcription only
 ├── SummaryModel.py               # GPT-4o summary module
+│   ├── summarize_transcription()        # Basic summary
+│   └── summarize_with_diarization()     # Summary with speaker analysis
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -93,15 +127,19 @@ whisperx-prompt-customize/
 ```
 Audio File
     ↓
-[WhisperX Transcription] → [Clear VRAM] → [Diarization]
-                                              ↓
-                          [Summary API] ←──parallel──┘
-                                              ↓
-                          [Combined Output: Transcript + Summary]
+[WhisperX Transcription] → [Clear VRAM]
+    ↓
+[Speaker Diarization] → Build speaker summary
+    ↓
+[GPT-4o Summary API] ← Transcript + Speaker Data
+    ↓
+[Output: Transcript + Summary with Speaker Analysis]
 ```
 
 ## 📝 TODO
 - [x] **Pipeline prompt customization สำหรับสร้างสรุปประชุมหลังถอดเสียง**
+- [x] **Auto-detect meeting type (11 ประเภท)**
+- [x] **Speaker role analysis จาก diarization data**
 - [ ] ปรับปรุงความแม่นยำภาษาไทย
 - [ ] เพิ่ม alignment model สำหรับภาษาไทย
 - [ ] เพิ่มการ export เป็น SRT/VTT

@@ -27,7 +27,7 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 import whisperx
-from SummaryModel import summarize_transcription
+from SummaryModel import summarize_transcription, summarize_with_diarization
 
 
 # ===================== CONFIGURATION =====================
@@ -203,10 +203,10 @@ class TranscribeSummaryPipeline:
         self.config = config or PipelineConfig()
         self.transcriber = WhisperXTranscriber(self.config)
     
-    def _summarize_async(self, text: str) -> Dict[str, Any]:
-        """Run summarization and return result with timing"""
+    def _summarize_async(self, transcript_with_speakers: str, speaker_summary: dict) -> Dict[str, Any]:
+        """Run summarization with diarization data and return result with timing"""
         start = time.time()
-        summary = summarize_transcription(text)
+        summary = summarize_with_diarization(transcript_with_speakers, speaker_summary)
         elapsed = time.time() - start
         return {'summary': summary, 'time': elapsed}
     
@@ -263,56 +263,58 @@ class TranscribeSummaryPipeline:
         self.transcriber.model = None
         clear_gpu_memory()
         
-        # Step 2: Run diarization and summary IN PARALLEL
-        print("⚡ Starting parallel processing: Diarization + Summary API")
+        # Step 2: Run diarization FIRST (needs speaker info for summary)
+        print("👥 Running speaker diarization...")
+        diarize_start = time.time()
+        diarize_model = whisperx.diarize.DiarizationPipeline(
+            use_auth_token=self.config.HF_TOKEN,
+            device=self.config.DEVICE
+        )
+        diarize_segments = diarize_model(audio)
+        diarize_time = time.time() - diarize_start
+        print(f"   ⏱️ Diarization: {diarize_time:.2f}s")
         
-        summary_result = {'summary': '', 'time': 0}
-        diarize_time = 0
+        # Assign speakers to segments
+        result = whisperx.assign_word_speakers(diarize_segments, result)
         
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            # Start summary in background
-            summary_future = executor.submit(self._summarize_async, combined_text)
-            
-            # Run diarization in main thread (needs GPU)
-            print("👥 Running speaker diarization...")
-            diarize_start = time.time()
-            diarize_model = whisperx.diarize.DiarizationPipeline(
-                use_auth_token=self.config.HF_TOKEN,
-                device=self.config.DEVICE
-            )
-            diarize_segments = diarize_model(audio)
-            diarize_time = time.time() - diarize_start
-            print(f"   ⏱️ Diarization: {diarize_time:.2f}s")
-            
-            # Assign speakers
-            result = whisperx.assign_word_speakers(diarize_segments, result)
-            
-            # Clear diarization model
-            del diarize_model
-            clear_gpu_memory()
-            
-            # Wait for summary to complete
-            print("⏳ Waiting for summary...")
-            summary_result = summary_future.result()
-            print(f"   ⏱️ Summary API: {summary_result['time']:.2f}s")
+        # Clear diarization model
+        del diarize_model
+        clear_gpu_memory()
+        
+        # Build speaker summary and transcript with speaker labels
+        segments = sorted(result.get('segments', []), key=lambda x: x['start'])
+        speakers_time = {}
+        speakers_words = {}
+        transcript_lines = []
+        
+        for segment in segments:
+            speaker = format_speaker(segment.get('speaker'))
+            duration = segment['end'] - segment['start']
+            text = segment.get('text', '').strip()
+            word_count = len(text.split())
+            speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
+            speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
+            # Build transcript with speaker labels
+            transcript_lines.append(f"[{speaker}]: {text}")
+        
+        transcript_with_speakers = "\n".join(transcript_lines)
+        speaker_summary = {
+            'speaking_time': speakers_time,
+            'word_count': speakers_words,
+        }
+        
+        # Step 3: Run summary with diarization data
+        print("🤖 Running AI Summary with speaker analysis...")
+        summary_start = time.time()
+        summary_text = summarize_with_diarization(transcript_with_speakers, speaker_summary)
+        summary_time = time.time() - summary_start
+        print(f"   ⏱️ Summary API: {summary_time:.2f}s")
         
         total_time = time.time() - total_start
         
         # Calculate audio length and speed
         audio_length = len(audio) / 16000
         speed_factor = audio_length / total_time if total_time > 0 else 0
-        
-        # Build speaker summary
-        segments = sorted(result.get('segments', []), key=lambda x: x['start'])
-        speakers_time = {}
-        speakers_words = {}
-        
-        for segment in segments:
-            speaker = format_speaker(segment.get('speaker'))
-            duration = segment['end'] - segment['start']
-            word_count = len(segment.get('text', '').split())
-            speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
-            speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
         
         # Build output
         output = {
@@ -322,7 +324,7 @@ class TranscribeSummaryPipeline:
                 'audio_load': audio_time,
                 'transcription': trans_time,
                 'diarization': diarize_time,
-                'summarization': summary_result['time'],
+                'summarization': summary_time,
                 'total': total_time,
             },
             'audio_length_seconds': audio_length,
@@ -330,12 +332,10 @@ class TranscribeSummaryPipeline:
             'full_transcript': {
                 'segments': segments,
                 'combined_text': combined_text,
-                'speaker_summary': {
-                    'speaking_time': speakers_time,
-                    'word_count': speakers_words,
-                }
+                'transcript_with_speakers': transcript_with_speakers,
+                'speaker_summary': speaker_summary,
             },
-            'summary': summary_result['summary'],
+            'summary': summary_text,
         }
         
         return output
