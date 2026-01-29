@@ -1,3 +1,5 @@
+version: '2.3'
+
 services:
   whisperx:
     build: .
@@ -7,7 +9,14 @@ services:
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
+      - HF_HOME=/app/.cache/huggingface
+      - TORCH_HOME=/app/.cache/torch
     volumes:
       - ./audio:/app/audio
+      # Persist model cache between container restarts
+      - whisperx_cache:/app/.cache
     env_file:
       - .env
+
+volumes:
+  whisperx_cache:

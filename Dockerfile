@@ -3,6 +3,10 @@ FROM nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
+# Set cache directories for models (will be persisted via volume)
+ENV HF_HOME=/app/.cache/huggingface
+ENV TORCH_HOME=/app/.cache/torch
+
 WORKDIR /app
 
 # Install system dependencies
@@ -26,13 +30,13 @@ RUN pip install --no-cache-dir --upgrade pip setuptools wheel
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Create cache directories
+RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/audio
+
 # Copy scripts
 COPY Whisper_Test.py .
 COPY SummaryModel.py .
-COPY TranscribeSummaryPipeline.py .
-
-# Create audio directory
-RUN mkdir -p /app/audio
+COPY TM.py .
 
 # Default to bash for flexibility (can run any script)
 CMD ["bash"]

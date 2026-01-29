@@ -1,5 +1,5 @@
 """
-TranscribeSummaryPipeline.py
+TM.py - Transcription & Meeting Summary Pipeline
 Combined WhisperX Transcription + GPT-4o Summary Pipeline
 
 Output:
@@ -11,8 +11,6 @@ import torch
 import gc
 import os
 import time
-import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Dict, Any, Optional
 from dotenv import load_dotenv
 
@@ -27,7 +25,7 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 import whisperx
-from SummaryModel import summarize_transcription, summarize_with_diarization
+from SummaryModel import summarize_with_diarization
 
 
 # ===================== CONFIGURATION =====================
@@ -82,17 +80,20 @@ def clear_gpu_memory():
         torch.cuda.empty_cache()
 
 
-# ===================== WHISPERX TRANSCRIBER =====================
-class WhisperXTranscriber:
-    """Handles WhisperX transcription with speaker diarization"""
+# ===================== TRANSCRIBE SUMMARY PIPELINE =====================
+class TranscribeSummaryPipeline:
+    """
+    Combined pipeline that runs WhisperX transcription and GPT-4o summarization.
+    Handles model loading, transcription, speaker diarization, and AI summary.
+    """
     
     def __init__(self, config: PipelineConfig = None):
         self.config = config or PipelineConfig()
         self.model = None
         self.timing = {}
     
-    def load_model(self):
-        """Load WhisperX model"""
+    def _load_model(self):
+        """Load WhisperX model with optimized settings"""
         print("🔄 Loading WhisperX model...")
         start = time.time()
         
@@ -125,91 +126,6 @@ class WhisperXTranscriber:
         self.timing['model_load'] = time.time() - start
         print(f"   ⏱️ Model loaded: {self.timing['model_load']:.2f}s")
     
-    def transcribe(self, audio_file: str) -> Dict[str, Any]:
-        """
-        Transcribe audio file with speaker diarization.
-        Returns result dict and combined text for summary.
-        """
-        if self.model is None:
-            self.load_model()
-        
-        # Load audio
-        print("🔄 Loading audio...")
-        start = time.time()
-        audio = whisperx.load_audio(audio_file)
-        self.timing['audio_load'] = time.time() - start
-        print(f"   ⏱️ Audio loaded: {self.timing['audio_load']:.2f}s")
-        
-        # Transcribe
-        print("🎯 Transcribing...")
-        start = time.time()
-        result = self.model.transcribe(
-            audio,
-            batch_size=self.config.BATCH_SIZE,
-            language=self.config.LANGUAGE,
-            task="transcribe",
-        )
-        self.timing['transcription'] = time.time() - start
-        print(f"   ⏱️ Transcription: {self.timing['transcription']:.2f}s")
-        
-        # Extract combined text BEFORE clearing model (for parallel summary)
-        combined_text = ' '.join(
-            seg.get('text', '').strip() 
-            for seg in result.get('segments', [])
-        )
-        
-        # Clear model to free VRAM for diarization
-        del self.model
-        self.model = None
-        clear_gpu_memory()
-        
-        # Speaker diarization
-        print("👥 Running speaker diarization...")
-        start = time.time()
-        diarize_model = whisperx.diarize.DiarizationPipeline(
-            use_auth_token=self.config.HF_TOKEN,
-            device=self.config.DEVICE
-        )
-        diarize_segments = diarize_model(audio)
-        self.timing['diarization'] = time.time() - start
-        print(f"   ⏱️ Diarization: {self.timing['diarization']:.2f}s")
-        
-        # Assign speakers
-        result = whisperx.assign_word_speakers(diarize_segments, result)
-        
-        # Clear diarization model
-        del diarize_model
-        clear_gpu_memory()
-        
-        # Calculate audio length
-        audio_length = len(audio) / 16000  # 16kHz sample rate
-        
-        return {
-            'result': result,
-            'combined_text': combined_text,
-            'audio_length': audio_length,
-            'timing': self.timing.copy()
-        }
-
-
-# ===================== COMBINED PIPELINE =====================
-class TranscribeSummaryPipeline:
-    """
-    Combined pipeline that runs WhisperX transcription and GPT-4o summarization.
-    Optimized to run summary in parallel with diarization.
-    """
-    
-    def __init__(self, config: PipelineConfig = None):
-        self.config = config or PipelineConfig()
-        self.transcriber = WhisperXTranscriber(self.config)
-    
-    def _summarize_async(self, transcript_with_speakers: str, speaker_summary: dict) -> Dict[str, Any]:
-        """Run summarization with diarization data and return result with timing"""
-        start = time.time()
-        summary = summarize_with_diarization(transcript_with_speakers, speaker_summary)
-        elapsed = time.time() - start
-        return {'summary': summary, 'time': elapsed}
-    
     def process(self, audio_file: str) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
@@ -227,23 +143,20 @@ class TranscribeSummaryPipeline:
         print(f"📁 Audio file: {audio_file}")
         print()
         
-        # Load model first
-        self.transcriber.load_model()
+        # Step 1: Load model
+        self._load_model()
         
-        # Transcribe (this clears model and runs diarization internally)
-        # But we need to start summary in parallel with diarization
-        # So we'll modify the flow slightly
-        
-        # Step 1: Load audio and transcribe
+        # Step 2: Load audio
         print("🔄 Loading audio...")
         audio_start = time.time()
         audio = whisperx.load_audio(audio_file)
         audio_time = time.time() - audio_start
         print(f"   ⏱️ Audio loaded: {audio_time:.2f}s")
         
+        # Step 3: Transcribe
         print("🎯 Transcribing...")
         trans_start = time.time()
-        result = self.transcriber.model.transcribe(
+        result = self.model.transcribe(
             audio,
             batch_size=self.config.BATCH_SIZE,
             language=self.config.LANGUAGE,
@@ -258,9 +171,9 @@ class TranscribeSummaryPipeline:
             for seg in result.get('segments', [])
         )
         
-        # Clear transcription model
-        del self.transcriber.model
-        self.transcriber.model = None
+        # Clear transcription model to free VRAM
+        del self.model
+        self.model = None
         clear_gpu_memory()
         
         # Step 2: Run diarization FIRST (needs speaker info for summary)
@@ -320,7 +233,7 @@ class TranscribeSummaryPipeline:
         output = {
             'audio_file': audio_file,
             'processing_time': {
-                'model_load': self.transcriber.timing.get('model_load', 0),
+                'model_load': self.timing.get('model_load', 0),
                 'audio_load': audio_time,
                 'transcription': trans_time,
                 'diarization': diarize_time,
