@@ -39,13 +39,18 @@ transcribe_options = {
 }
 
 # ===================== VAD OPTIONS =====================
-# Voice Activity Detection - ช่วยตัด silence และปรับปรุง segmentation
+# Voice Activity Detection - optimized for overlapping speech detection
 vad_options = {
-    "vad_onset": 0.500,      # threshold สำหรับเริ่ม speech
-    "vad_offset": 0.363,     # threshold สำหรับจบ speech  
-    "min_duration_on": 0.1,  # minimum speech duration (sec)
-    "min_duration_off": 0.1, # minimum silence duration (sec)
+    "vad_onset": 0.400,      # Lower = more sensitive to speech start
+    "vad_offset": 0.300,     # Lower = faster silence detection  
+    "min_duration_on": 0.05, # Catch short speech segments (sec)
+    "min_duration_off": 0.05, # Catch short pauses/interruptions (sec)
 }
+
+# ===================== SPEAKER DIARIZATION OPTIONS =====================
+# Set expected speaker count for better overlapping speech detection
+min_speakers = 2    # Minimum expected speakers (None = auto detect)
+max_speakers = None # Maximum expected speakers (None = auto detect)
 
 # ===================== MAIN SCRIPT =====================
 # รับ path ไฟล์เสียงจาก user
@@ -110,7 +115,11 @@ diarize_model = whisperx.diarize.DiarizationPipeline(
     use_auth_token=HF_TOKEN, 
     device=device
 )
-diarize_segments = diarize_model(audio)
+diarize_segments = diarize_model(
+    audio,
+    min_speakers=min_speakers,
+    max_speakers=max_speakers,
+)
 diarize_time = time.time() - diarize_start
 print(f"   ⏱️ Diarization: {diarize_time:.2f}s")
 
