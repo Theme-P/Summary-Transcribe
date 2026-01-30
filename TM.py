@@ -25,7 +25,7 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 import whisperx
-from SummaryModel import summarize_with_diarization
+from SummaryModel import summarize_with_diarization, export_to_docx
 
 
 # ===================== CONFIGURATION =====================
@@ -335,3 +335,20 @@ if __name__ == "__main__":
     pipeline = TranscribeSummaryPipeline()
     output = pipeline.process(audio_file)
     pipeline.print_results(output)
+    
+    # Export to DOCX
+    docx_path = os.path.splitext(audio_file)[0] + "_summary.docx"
+    try:
+        result_path = export_to_docx(
+            summary_text=output['summary'],
+            output_path=docx_path,
+            audio_file=audio_file,
+            processing_time={
+                **output['processing_time'],
+                'audio_length': output['audio_length_seconds']
+            },
+            speaker_summary=output['full_transcript']['speaker_summary']
+        )
+        print(f"\n📄 Summary exported to: {result_path}")
+    except Exception as e:
+        print(f"\n⚠️ Could not export DOCX: {e}")

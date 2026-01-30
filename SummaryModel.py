@@ -218,3 +218,132 @@ def summarize_with_diarization(
         return f"Error calling NTC API: {str(e)}"
     except (KeyError, IndexError) as e:
         return f"Error parsing response: {str(e)}"
+
+
+def export_to_docx(
+    summary_text: str,
+    output_path: str,
+    audio_file: str = None,
+    processing_time: dict = None,
+    speaker_summary: dict = None
+) -> str:
+    """
+    Export summary to a formatted DOCX file.
+    
+    Args:
+        summary_text: The summary text (markdown format)
+        output_path: Path for the output DOCX file
+        audio_file: Original audio file name (optional)
+        processing_time: Dict with processing times (optional)
+        speaker_summary: Dict with speaker info (optional)
+    
+    Returns:
+        Path to the created DOCX file
+    """
+    try:
+        from docx import Document
+        from docx.shared import Inches, Pt, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.enum.style import WD_STYLE_TYPE
+        import re
+        from datetime import datetime
+    except ImportError:
+        return "Error: python-docx not installed. Run: pip install python-docx"
+    
+    doc = Document()
+    
+    # Title
+    title = doc.add_heading('📝 สรุปการประชุม', 0)
+    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    
+    # Metadata section
+    if audio_file or processing_time:
+        doc.add_heading('ข้อมูลทั่วไป', level=1)
+        
+        if audio_file:
+            doc.add_paragraph(f"📁 ไฟล์เสียง: {os.path.basename(audio_file)}")
+        
+        doc.add_paragraph(f"📅 วันที่สร้าง: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        if processing_time:
+            total = processing_time.get('total', 0)
+            audio_len = processing_time.get('audio_length', 0)
+            if audio_len:
+                mins = int(audio_len // 60)
+                secs = int(audio_len % 60)
+                doc.add_paragraph(f"⏱️ ความยาวเสียง: {mins}:{secs:02d} นาที")
+            doc.add_paragraph(f"⚡ เวลาประมวลผล: {total:.1f} วินาที")
+    
+    # Speaker summary
+    if speaker_summary:
+        doc.add_heading('👥 สรุปผู้พูด', level=1)
+        speakers_time = speaker_summary.get('speaking_time', {})
+        speakers_words = speaker_summary.get('word_count', {})
+        total_time = sum(speakers_time.values()) if speakers_time else 1
+        
+        for speaker, time_sec in sorted(speakers_time.items(), key=lambda x: -x[1]):
+            pct = (time_sec / total_time * 100) if total_time > 0 else 0
+            words = speakers_words.get(speaker, 0)
+            mins = int(time_sec // 60)
+            secs = int(time_sec % 60)
+            doc.add_paragraph(f"• {speaker}: {mins}:{secs:02d} ({pct:.1f}%), {words} คำ")
+    
+    doc.add_paragraph()  # Spacer
+    
+    # Main summary content
+    doc.add_heading('📋 เนื้อหาสรุป', level=1)
+    
+    # Parse markdown and add to document
+    lines = summary_text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        
+        # Handle headers (**, ##, etc.)
+        if line.startswith('**') and line.endswith('**'):
+            # Bold header
+            text = line.strip('*').strip()
+            p = doc.add_paragraph()
+            run = p.add_run(text)
+            run.bold = True
+            run.font.size = Pt(12)
+        elif line.startswith('##'):
+            text = line.lstrip('#').strip()
+            doc.add_heading(text, level=2)
+        elif line.startswith('#'):
+            text = line.lstrip('#').strip()
+            doc.add_heading(text, level=1)
+        elif line.startswith('- ') or line.startswith('• '):
+            # Bullet point
+            text = line[2:].strip()
+            # Handle bold text within bullet points
+            p = doc.add_paragraph(style='List Bullet')
+            _add_formatted_text(p, text)
+        else:
+            # Regular paragraph
+            p = doc.add_paragraph()
+            _add_formatted_text(p, line)
+    
+    # Save document
+    doc.save(output_path)
+    return output_path
+
+
+def _add_formatted_text(paragraph, text: str):
+    """Helper function to add text with markdown bold formatting to a paragraph."""
+    import re
+    
+    # Split by bold markers (**text**)
+    parts = re.split(r'(\*\*[^*]+\*\*)', text)
+    
+    for part in parts:
+        if part.startswith('**') and part.endswith('**'):
+            # Bold text
+            run = paragraph.add_run(part[2:-2])
+            run.bold = True
+        else:
+            # Regular text
+            paragraph.add_run(part)
+
