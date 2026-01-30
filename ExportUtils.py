@@ -69,26 +69,26 @@ def export_transcript_to_docx(
     doc = Document()
     
     # Title
-    title = doc.add_heading('📝 บันทึกการประชุม (Raw Transcript)', 0)
+    title = doc.add_heading('บันทึกการประชุม (Raw Transcript)', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     # Metadata
     doc.add_heading('ข้อมูลทั่วไป', level=1)
     
     if audio_file:
-        doc.add_paragraph(f"📁 ไฟล์เสียง: {os.path.basename(audio_file)}")
+        doc.add_paragraph(f"ไฟล์เสียง: {os.path.basename(audio_file)}")
     
-    doc.add_paragraph(f"📅 วันที่สร้าง: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    doc.add_paragraph(f"วันที่สร้าง: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     if audio_length:
         mins = int(audio_length // 60)
         secs = int(audio_length % 60)
-        doc.add_paragraph(f"⏱️ ความยาวเสียง: {mins}:{secs:02d} นาที")
+        doc.add_paragraph(f"ความยาวเสียง: {mins}:{secs:02d} นาที")
     
     doc.add_paragraph()
     
     # Transcript content
-    doc.add_heading('📋 เนื้อหาการประชุม', level=1)
+    doc.add_heading('เนื้อหาการประชุม', level=1)
     
     # Add table for transcript
     table = doc.add_table(rows=1, cols=4)
@@ -130,7 +130,7 @@ def export_transcript_to_docx(
     
     # Add Combined Text section
     doc.add_paragraph()
-    doc.add_heading('📄 เนื้อหารวม (Combined Text)', level=1)
+    doc.add_heading('เนื้อหารวม (Combined Text)', level=1)
     
     # Build combined text with speaker labels
     combined_lines = []
@@ -182,10 +182,52 @@ def export_summary_to_docx(
     doc = Document()
     
     # Title
-    title = doc.add_heading('📝 สรุปการประชุม', 0)
+    title = doc.add_heading('สรุปการประชุม', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
     doc.add_paragraph()  # Spacer
+    
+    # Header mapping for structured sections
+    section_headers = {
+        'ประเภท': 1,
+        'ผู้เข้าร่วมประชุม': 1,
+        'สรุปการประชุม': 1,
+        'การสั่งงาน': 1,
+        'มอบหมาย': 1,
+        'คำถามสำคัญ': 1,
+        'ข้อตกลง': 1,
+        'มติ': 1,
+        'สถานะ': 2,
+        'ความคืบหน้า': 2,
+        'ปัญหา': 2,
+        'แนวทางแก้': 2,
+        'งานถัดไป': 2,
+        'นโยบาย': 2,
+        'การอนุมัติ': 2,
+    }
+    
+    def remove_emoji(text):
+        """Remove emoji from text"""
+        import re
+        emoji_pattern = re.compile("["
+            u"\U0001F600-\U0001F64F"  # emoticons
+            u"\U0001F300-\U0001F5FF"  # symbols & pictographs
+            u"\U0001F680-\U0001F6FF"  # transport & map symbols
+            u"\U0001F1E0-\U0001F1FF"  # flags
+            u"\U00002702-\U000027B0"
+            u"\U000024C2-\U0001F251"
+            u"\U0001f926-\U0001f937"
+            u"\U00010000-\U0010ffff"
+            "]+", flags=re.UNICODE)
+        return emoji_pattern.sub('', text).strip()
+    
+    def get_header_level(text):
+        """Determine header level based on content"""
+        clean_text = remove_emoji(text)
+        for keyword, level in section_headers.items():
+            if keyword in clean_text:
+                return level
+        return None
     
     # Parse markdown and add to document
     lines = summary_text.split('\n')
@@ -195,29 +237,38 @@ def export_summary_to_docx(
         if not line:
             continue
         
+        # Remove emoji from line
+        clean_line = remove_emoji(line)
+        
         # Handle headers (**, ##, etc.)
         if line.startswith('**') and line.endswith('**'):
-            # Bold header
+            # Bold header - check if it's a section header
             text = line.strip('*').strip()
-            p = doc.add_paragraph()
-            run = p.add_run(text)
-            run.bold = True
-            run.font.size = Pt(12)
+            clean_text = remove_emoji(text)
+            header_level = get_header_level(text)
+            
+            if header_level:
+                doc.add_heading(clean_text, level=header_level)
+            else:
+                p = doc.add_paragraph()
+                run = p.add_run(clean_text)
+                run.bold = True
+                run.font.size = Pt(12)
         elif line.startswith('##'):
-            text = line.lstrip('#').strip()
+            text = remove_emoji(line.lstrip('#').strip())
             doc.add_heading(text, level=2)
         elif line.startswith('#'):
-            text = line.lstrip('#').strip()
+            text = remove_emoji(line.lstrip('#').strip())
             doc.add_heading(text, level=1)
         elif line.startswith('- ') or line.startswith('• '):
             # Bullet point
-            text = line[2:].strip()
+            text = remove_emoji(line[2:].strip())
             p = doc.add_paragraph(style='List Bullet')
             _add_formatted_text(p, text)
         else:
             # Regular paragraph
             p = doc.add_paragraph()
-            _add_formatted_text(p, line)
+            _add_formatted_text(p, clean_line)
     
     # Save document
     doc.save(output_path)
