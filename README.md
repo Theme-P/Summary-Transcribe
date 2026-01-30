@@ -10,8 +10,9 @@ Thai speech-to-text using WhisperX with speaker diarization + GPT-4o summarizati
 - 🇹🇭 Thai language support
 - 🤖 **AI Summary** - สรุปใจความสำคัญด้วย GPT-4o
 - 🐳 Docker ready (CUDA/GPU)
-- 👥 **Speaker Analysis** - วิเคราะห์บทบาทผู้พูดอัตโนมัติ
+- 👥 **Speaker Analysis** - วิเคราะห์บทบาทผู้พูด
 - 📋 **Auto Meeting Type Detection** - ระบุประเภทการประชุม 11 รูปแบบ
+- 📄 **DOCX Export** - ส่งออกไฟล์ Transcript และ Summary
 
 ## 🎯 Supported Meeting Types
 
@@ -47,21 +48,19 @@ sudo docker compose build
 ```
 
 ### 3. Run
-
 ```bash
-# Start container
-sudo docker compose run --rm whisperx
+# Run full pipeline (Transcription + Summary + Export)
+sudo docker compose run whisperx python TM.py
 
-# Option 1: Transcription + Summary (Pipeline ใหม่)
-python TranscribeSummaryPipeline.py
-
-# Option 2: Transcription only (เดิม)
-python Whisper_Test.py
+# Or transcription only (without summary)
+sudo docker compose run whisperx python Whisper_Test.py
 ```
 
-## 📊 Output Examples
+## 📊 Output
 
-### TranscribeSummaryPipeline.py
+เมื่อรัน `TM.py` จะได้:
+
+### Console Output
 ```
 📊 PROCESSING SUMMARY   → Processing time breakdown
 📝 FULL TRANSCRIPT      → Timestamped transcript with speakers
@@ -70,19 +69,11 @@ python Whisper_Test.py
 🤖 AI SUMMARY           → GPT-4o summary with speaker analysis
 ```
 
-### AI Summary Output
+### DOCX Files
 ```
-**[Progress Update]: การประชุมติดตามโครงการ**
-
-**👥 ผู้เข้าร่วมประชุม (3 คน):**
-- คนพูด 1 (ประธาน): ดำเนินการประชุม, สรุปมติ
-- คนพูด 2 (ผู้นำเสนอ EA): รายงานความคืบหน้าทีม EA
-- คนพูด 3 (ผู้นำเสนอ IAM): รายงานความคืบหน้าทีม IAM
-
-**📋 สรุปการประชุม:**
-- สถานะ: ...
-- ปัญหา: ...
-- มติ: ...
+📄 Files exported:
+   - audio/filename_transcript.docx  → Raw transcript (ตาราง + Combined Text)
+   - audio/filename_summary.docx     → AI Summary
 ```
 
 ## ⚙️ Configuration
@@ -110,16 +101,20 @@ NTC_API_URL=https://aigateway.ntictsolution.com/v1/chat/completions
 ## 📁 Project Structure
 ```
 whisperx-prompt-customize/
-├── TranscribeSummaryPipeline.py  # Combined transcription + summary
-├── Whisper_Test.py               # Transcription only
-├── SummaryModel.py               # GPT-4o summary module
-│   ├── summarize_transcription()        # Basic summary
-│   └── summarize_with_diarization()     # Summary with speaker analysis
+├── TM.py                   # Main pipeline (Transcription + Summary + Export)
+├── Whisper_Test.py         # Transcription only
+├── SummaryModel.py         # GPT-4o summary module
+│   ├── summarize_transcription()      # Basic summary
+│   └── summarize_with_diarization()   # Summary with speaker analysis
+├── ExportUtils.py          # DOCX export utilities
+│   ├── export_transcript_to_docx()    # Raw transcript export
+│   ├── export_summary_to_docx()       # Summary export
+│   └── export_both()                  # Export both files
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
-├── .env.example                  # Environment template
-└── audio/                        # Put audio files here
+├── .env.example            # Environment template
+└── audio/                  # Put audio files here
 ```
 
 ## 🔄 Pipeline Flow
@@ -133,13 +128,16 @@ Audio File
     ↓
 [GPT-4o Summary API] ← Transcript + Speaker Data
     ↓
-[Output: Transcript + Summary with Speaker Analysis]
+[Export DOCX] → transcript.docx + summary.docx
+    ↓
+[Output Complete]
 ```
 
 ## 📝 TODO
-- [x] **Pipeline prompt customization สำหรับสร้างสรุปประชุมหลังถอดเสียง**
-- [x] **Auto-detect meeting type (11 ประเภท)**
-- [x] **Speaker role analysis จาก diarization data**
+- [x] Pipeline prompt customization สำหรับสร้างสรุปประชุม
+- [x] Auto-detect meeting type (11 ประเภท)
+- [x] Speaker role analysis จาก diarization data
+- [x] **Export to DOCX (Transcript + Summary)**
 - [ ] ปรับปรุงความแม่นยำภาษาไทย
 - [ ] เพิ่ม alignment model สำหรับภาษาไทย
 - [ ] เพิ่มการ export เป็น SRT/VTT
