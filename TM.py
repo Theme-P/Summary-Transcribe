@@ -25,7 +25,7 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 import whisperx
-from SummaryModel import summarize_with_diarization, export_to_docx
+from SummaryModel import summarize_with_diarization
 
 
 # ===================== CONFIGURATION =====================
@@ -336,19 +336,22 @@ if __name__ == "__main__":
     output = pipeline.process(audio_file)
     pipeline.print_results(output)
     
-    # Export to DOCX
-    docx_path = os.path.splitext(audio_file)[0] + "_summary.docx"
+    # Export to DOCX files (both transcript and summary)
+    from ExportUtils import export_both
+    
+    base_path = os.path.splitext(audio_file)[0]
     try:
-        result_path = export_to_docx(
+        results = export_both(
+            segments=output['full_transcript']['segments'],
             summary_text=output['summary'],
-            output_path=docx_path,
+            base_path=base_path,
             audio_file=audio_file,
-            processing_time={
-                **output['processing_time'],
-                'audio_length': output['audio_length_seconds']
-            },
-            speaker_summary=output['full_transcript']['speaker_summary']
+            audio_length=output['audio_length_seconds'],
+            format_speaker_func=format_speaker
         )
-        print(f"\n📄 Summary exported to: {result_path}")
+        print(f"\n📄 Files exported:")
+        print(f"   - Transcript: {results['transcript']}")
+        print(f"   - Summary: {results['summary']}")
     except Exception as e:
         print(f"\n⚠️ Could not export DOCX: {e}")
+

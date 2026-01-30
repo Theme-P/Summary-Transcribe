@@ -36,6 +36,7 @@ RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/audio
 # Copy scripts
 COPY Whisper_Test.py .
 COPY SummaryModel.py .
+COPY ExportUtils.py .
 COPY TM.py .
 
 # Default to bash for flexibility (can run any script)
