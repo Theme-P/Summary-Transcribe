@@ -128,6 +128,35 @@ def export_transcript_to_docx(
         row[2].text = speaker
         row[3].text = text
     
+    # Add Combined Text section
+    doc.add_paragraph()
+    doc.add_heading('📄 เนื้อหารวม (Combined Text)', level=1)
+    
+    # Build combined text with speaker labels
+    combined_lines = []
+    current_speaker = None
+    current_text = []
+    
+    for segment in sorted(segments, key=lambda x: x.get('start', 0)):
+        speaker = format_speaker(segment.get('speaker'))
+        text = segment.get('text', '').strip()
+        
+        if speaker == current_speaker:
+            current_text.append(text)
+        else:
+            if current_speaker and current_text:
+                combined_lines.append(f"[{current_speaker}]: {' '.join(current_text)}")
+            current_speaker = speaker
+            current_text = [text]
+    
+    # Add last speaker's text
+    if current_speaker and current_text:
+        combined_lines.append(f"[{current_speaker}]: {' '.join(current_text)}")
+    
+    # Add combined text to document
+    combined_text = "\n\n".join(combined_lines)
+    p = doc.add_paragraph(combined_text)
+    
     # Save document
     doc.save(output_path)
     return output_path
