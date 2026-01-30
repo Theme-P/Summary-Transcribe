@@ -256,42 +256,9 @@ def export_to_docx(
     title = doc.add_heading('📝 สรุปการประชุม', 0)
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     
-    # Metadata section
-    if audio_file or processing_time:
-        doc.add_heading('ข้อมูลทั่วไป', level=1)
-        
-        if audio_file:
-            doc.add_paragraph(f"📁 ไฟล์เสียง: {os.path.basename(audio_file)}")
-        
-        doc.add_paragraph(f"📅 วันที่สร้าง: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        
-        if processing_time:
-            total = processing_time.get('total', 0)
-            audio_len = processing_time.get('audio_length', 0)
-            if audio_len:
-                mins = int(audio_len // 60)
-                secs = int(audio_len % 60)
-                doc.add_paragraph(f"⏱️ ความยาวเสียง: {mins}:{secs:02d} นาที")
-            doc.add_paragraph(f"⚡ เวลาประมวลผล: {total:.1f} วินาที")
-    
-    # Speaker summary
-    if speaker_summary:
-        doc.add_heading('👥 สรุปผู้พูด', level=1)
-        speakers_time = speaker_summary.get('speaking_time', {})
-        speakers_words = speaker_summary.get('word_count', {})
-        total_time = sum(speakers_time.values()) if speakers_time else 1
-        
-        for speaker, time_sec in sorted(speakers_time.items(), key=lambda x: -x[1]):
-            pct = (time_sec / total_time * 100) if total_time > 0 else 0
-            words = speakers_words.get(speaker, 0)
-            mins = int(time_sec // 60)
-            secs = int(time_sec % 60)
-            doc.add_paragraph(f"• {speaker}: {mins}:{secs:02d} ({pct:.1f}%), {words} คำ")
-    
     doc.add_paragraph()  # Spacer
     
-    # Main summary content
-    doc.add_heading('📋 เนื้อหาสรุป', level=1)
+    # Main summary content (skip metadata and speaker summary)
     
     # Parse markdown and add to document
     lines = summary_text.split('\n')
