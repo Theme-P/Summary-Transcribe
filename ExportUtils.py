@@ -281,7 +281,8 @@ def export_both(
     base_path: str,
     audio_file: str = None,
     audio_length: float = None,
-    format_speaker_func = None
+    format_speaker_func = None,
+    output_dir: str = "Doc"
 ) -> Dict[str, str]:
     """
     Export both transcript and summary to DOCX files.
@@ -293,12 +294,23 @@ def export_both(
         audio_file: Original audio file name
         audio_length: Audio length in seconds
         format_speaker_func: Function to format speaker labels
+        output_dir: Directory to save output files (default: "Doc")
     
     Returns:
         Dict with 'transcript' and 'summary' paths
     """
-    transcript_path = f"{base_path}_transcript.docx"
-    summary_path = f"{base_path}_summary.docx"
+    # Ensure output directory exists
+    if not os.path.isabs(output_dir):
+        # If relative path, make it relative to current working directory
+        output_dir = os.path.join(os.getcwd(), output_dir)
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    # Get base filename from base_path
+    base_filename = os.path.basename(base_path)
+    
+    transcript_path = os.path.join(output_dir, f"{base_filename}_transcript.docx")
+    summary_path = os.path.join(output_dir, f"{base_filename}_summary.docx")
     
     results = {}
     
