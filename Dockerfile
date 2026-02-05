@@ -36,6 +36,7 @@ RUN mkdir -p /app/.cache/huggingface /app/.cache/torch /app/audio /app/Doc
 # Copy application files (new OOP structure)
 COPY app/ /app/app/
 COPY main.py .
+COPY api.py .
 COPY .env.example .env
 
 # Default to bash for flexibility (can run any script)

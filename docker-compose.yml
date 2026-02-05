@@ -13,8 +13,11 @@ services:
       - ./audio:/app/audio
       # Persist model cache between container restarts
       - whisperx_cache:/app/.cache
+    ports:
+      - "8000:8000"
     env_file:
       - .env
+    command: uvicorn api:app --host 0.0.0.0 --port 8000
 
 volumes:
   whisperx_cache:
