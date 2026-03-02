@@ -5,13 +5,14 @@ Provides REST API for frontend integration.
 import os
 import tempfile
 import shutil
+import uuid
 from typing import Optional
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -26,8 +27,12 @@ from app.utils.export import export_transcript_to_docx, export_summary_to_docx
 app = FastAPI(
     title="Transcribe-Summary API",
     description="API for transcribing audio files and generating AI summaries",
-    version="1.0.0"
+    version="2.0.0"
 )
+
+# Session storage for speaker clips (maps session_id -> clip_dir path)
+# In production, use Redis or a proper session store
+clip_sessions: Dict[str, str] = {}
 
 # Enable CORS for frontend
 app.add_middleware(
@@ -69,9 +74,16 @@ class ProcessingTime(BaseModel):
     model_load: float
     audio_load: float
     transcription: float
+    alignment: float
     diarization: float
     summarization: float
     total: float
+
+class SpeakerClipInfo(BaseModel):
+    clip_filename: str
+    start: float
+    end: float
+    duration: float
 
 class TranscribeSummarizeResponse(BaseModel):
     success: bool
@@ -80,6 +92,8 @@ class TranscribeSummarizeResponse(BaseModel):
     processing_time: ProcessingTime
     transcript: TranscriptResponse
     summary: str
+    speaker_clips: dict  # { "คนพูด 1": { clip_filename, start, end, duration } }
+    session_id: str  # For fetching audio clips
 
 
 # Request models for export
@@ -134,29 +148,18 @@ async def get_meeting_types():
 async def transcribe_summarize(
     audio: UploadFile = File(..., description="Audio file to transcribe"),
     meeting_type_id: int = Form(0, description="Meeting type ID (0=auto-detect, 1-11=specific type)"),
-    speaker_names: str = Form("[]", description="JSON array of speaker info [{name, position}]")
 ):
     """
     Transcribe audio file and generate AI summary.
     
     - **audio**: Audio file (mp3, wav, m4a, etc.)
     - **meeting_type_id**: Meeting type for summary structure (0 = auto-detect)
-    - **speaker_names**: JSON array of speaker names and positions
     
-    Returns transcript with speaker diarization and AI-generated summary.
+    Returns transcript with speaker diarization, AI-generated summary, and speaker audio clips.
     """
     # Validate meeting type
     if meeting_type_id < 0 or meeting_type_id > 11:
         raise HTTPException(status_code=400, detail="meeting_type_id must be between 0 and 11")
-    
-    # Parse speaker names
-    import json
-    try:
-        speaker_names_list = json.loads(speaker_names)
-        if not isinstance(speaker_names_list, list):
-            speaker_names_list = []
-    except (json.JSONDecodeError, TypeError):
-        speaker_names_list = []
     
     # Validate file type
     allowed_extensions = ['.mp3', '.wav', '.m4a', '.flac', '.ogg', '.webm', '.mp4']
@@ -176,9 +179,25 @@ async def transcribe_summarize(
         with open(temp_file, "wb") as buffer:
             shutil.copyfileobj(audio.file, buffer)
         
-        # Run pipeline
+        # Run pipeline (no speaker names — user will fill in after)
         pipeline = TranscribeSummaryPipeline()
-        result = pipeline.process(temp_file, meeting_type_id=meeting_type_id, speaker_names=speaker_names_list)
+        result = pipeline.process(temp_file, meeting_type_id=meeting_type_id)
+        
+        # Generate session ID for clip access
+        session_id = str(uuid.uuid4())
+        clip_dir = result.get('clip_dir', '')
+        if clip_dir and os.path.exists(clip_dir):
+            clip_sessions[session_id] = clip_dir
+        
+        # Build speaker clips response (without file paths, just filenames)
+        speaker_clips_response = {}
+        for speaker, clip_info in result.get('speaker_clips', {}).items():
+            speaker_clips_response[speaker] = {
+                "clip_filename": clip_info['clip_filename'],
+                "start": clip_info['start'],
+                "end": clip_info['end'],
+                "duration": clip_info['duration'],
+            }
         
         # Build response
         return TranscribeSummarizeResponse(
@@ -189,6 +208,7 @@ async def transcribe_summarize(
                 model_load=result['processing_time']['model_load'],
                 audio_load=result['processing_time']['audio_load'],
                 transcription=result['processing_time']['transcription'],
+                alignment=result['processing_time'].get('alignment', 0),
                 diarization=result['processing_time']['diarization'],
                 summarization=result['processing_time']['summarization'],
                 total=result['processing_time']['total']
@@ -201,7 +221,9 @@ async def transcribe_summarize(
                     word_count=result['full_transcript']['speaker_summary']['word_count']
                 )
             ),
-            summary=result['summary']
+            summary=result['summary'],
+            speaker_clips=speaker_clips_response,
+            session_id=session_id,
         )
         
     except Exception as e:
@@ -274,6 +296,49 @@ async def export_summary(request: ExportSummaryRequest):
         if os.path.exists(temp_dir):
             shutil.rmtree(temp_dir)
         raise HTTPException(status_code=500, detail=f"Export error: {str(e)}")
+
+
+# ===================== SPEAKER CLIP ENDPOINTS =====================
+
+@app.get("/api/speaker-clip/{session_id}/{filename}")
+async def get_speaker_clip(session_id: str, filename: str):
+    """
+    Serve a speaker audio clip file.
+    
+    - **session_id**: Session ID from transcribe-summarize response
+    - **filename**: Clip filename (e.g., speaker_0.mp3)
+    """
+    # Validate session
+    clip_dir = clip_sessions.get(session_id)
+    if not clip_dir or not os.path.exists(clip_dir):
+        raise HTTPException(status_code=404, detail="Session not found or expired")
+    
+    # Validate filename (prevent path traversal)
+    if '/' in filename or '..' in filename:
+        raise HTTPException(status_code=400, detail="Invalid filename")
+    
+    clip_path = os.path.join(clip_dir, filename)
+    if not os.path.exists(clip_path):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    
+    return FileResponse(
+        path=clip_path,
+        media_type="audio/mpeg",
+        filename=filename
+    )
+
+
+@app.delete("/api/session/{session_id}")
+async def cleanup_session(session_id: str):
+    """
+    Cleanup speaker clips for a session.
+    Call this when the user is done with the results.
+    """
+    clip_dir = clip_sessions.pop(session_id, None)
+    if clip_dir and os.path.exists(clip_dir):
+        shutil.rmtree(clip_dir, ignore_errors=True)
+    
+    return {"success": True, "message": "Session cleaned up"}
 
 
 # ===================== STARTUP =====================

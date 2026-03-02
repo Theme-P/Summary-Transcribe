@@ -2,7 +2,7 @@ import { useState } from 'react'
 
 const API_BASE = '/api'
 
-function ResultsTabs({ result, meetingType = 0, speakerNames = [] }) {
+function ResultsTabs({ result, meetingType = 0 }) {
     const [activeTab, setActiveTab] = useState('transcript')
     const [downloading, setDownloading] = useState(null)
 

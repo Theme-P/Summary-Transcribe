@@ -17,15 +17,15 @@ class PipelineConfig:
     BEST_OF = 5
     PATIENCE = 1.5
     
-    # VAD options (optimized for overlapping speech detection)
-    VAD_ONSET = 0.400       # Lower = more sensitive to speech start
-    VAD_OFFSET = 0.300      # Lower = faster silence detection
-    MIN_DURATION_ON = 0.05  # Catch short speech segments
-    MIN_DURATION_OFF = 0.05 # Catch short pauses/interruptions
+    # VAD options (tuned for meeting audio with multiple speakers)
+    VAD_ONSET = 0.500       # Speech start threshold (higher = less false positives)
+    VAD_OFFSET = 0.363      # Speech end threshold
+    MIN_DURATION_ON = 0.10  # Min speech duration (filter out clicks/noise)
+    MIN_DURATION_OFF = 0.10 # Min silence to split segments (avoid over-splitting)
     
-    # Speaker diarization settings (for overlapping speech)
-    MIN_SPEAKERS = 2        # Minimum expected speakers (None = auto)
-    MAX_SPEAKERS = None     # Maximum expected speakers (None = auto)
+    # Speaker diarization settings
+    MIN_SPEAKERS = None     # None = auto-detect (let pyannote decide)
+    MAX_SPEAKERS = None     # None = auto-detect
     
     # HuggingFace token for diarization
     HF_TOKEN = os.environ.get("HF_TOKEN", "")

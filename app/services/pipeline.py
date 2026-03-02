@@ -2,6 +2,7 @@ import torch
 import gc
 import os
 import time
+import tempfile
 from typing import Dict, Any, Optional
 import whisperx
 
@@ -9,6 +10,7 @@ from ..core.config import PipelineConfig
 from ..models.meeting import MEETING_TYPES
 from ..services.summarizer import summarize_with_diarization
 from ..utils.formatting import format_speaker, format_time
+from ..utils.audio_clip import extract_speaker_clips
 
 # Fix for PyTorch 2.6+ compatibility with pyannote
 _original_torch_load = torch.load
@@ -68,18 +70,18 @@ class TranscribeSummaryPipeline:
         self.timing['model_load'] = time.time() - start
         print(f"   ⏱️ Model loaded: {self.timing['model_load']:.2f}s")
     
-    def process(self, audio_file: str, meeting_type_id: int = 0, speaker_names: list = None) -> Dict[str, Any]:
+    def process(self, audio_file: str, meeting_type_id: int = 0) -> Dict[str, Any]:
         """
         Process audio file: transcribe and summarize.
         
         Args:
             audio_file: Path to audio file
             meeting_type_id: Meeting type ID (0=auto-detect, 1-11=specific type)
-            speaker_names: Optional list of dicts [{name, position}] for speaker labeling
         
         Returns structured output with:
         - Full transcript with segments
         - Summary
+        - Speaker audio clips (~10s per speaker)
         - Processing times
         """
         total_start = time.time()
@@ -123,13 +125,46 @@ class TranscribeSummaryPipeline:
         self.model = None
         clear_gpu_memory()
         
-        # Step 2: Run diarization FIRST (needs speaker info for summary)
+        # Step 4: Align transcript (word-level timestamps for better speaker assignment)
+        print("📐 Aligning transcript (word-level timestamps)...")
+        align_start = time.time()
+        try:
+            align_model, align_metadata = whisperx.load_align_model(
+                language_code=self.config.LANGUAGE,
+                device=self.config.DEVICE
+            )
+            result = whisperx.align(
+                result["segments"],
+                align_model,
+                align_metadata,
+                audio,
+                self.config.DEVICE,
+                return_char_alignments=False,
+            )
+            align_time = time.time() - align_start
+            print(f"   ⏱️ Alignment: {align_time:.2f}s")
+            
+            # Clear alignment model
+            del align_model
+            clear_gpu_memory()
+        except Exception as e:
+            align_time = 0
+            print(f"   ⚠️ Alignment skipped (will use segment-level timestamps): {e}")
+        
+        # Step 5: Run speaker diarization
         print("👥 Running speaker diarization...")
         diarize_start = time.time()
-        diarize_model = whisperx.diarize.DiarizationPipeline(
-            use_auth_token=self.config.HF_TOKEN,
-            device=self.config.DEVICE
-        )
+        try:
+            diarize_model = whisperx.diarize.DiarizationPipeline(
+                use_auth_token=self.config.HF_TOKEN,
+                device=self.config.DEVICE
+            )
+        except TypeError:
+            # Newer pyannote versions use 'token' instead of 'use_auth_token'
+            diarize_model = whisperx.diarize.DiarizationPipeline(
+                token=self.config.HF_TOKEN,
+                device=self.config.DEVICE
+            )
         diarize_segments = diarize_model(
             audio,
             min_speakers=self.config.MIN_SPEAKERS,
@@ -138,25 +173,14 @@ class TranscribeSummaryPipeline:
         diarize_time = time.time() - diarize_start
         print(f"   ⏱️ Diarization: {diarize_time:.2f}s")
         
-        # Assign speakers to segments
+        # Assign speakers to segments (with word-level alignment = much better accuracy)
         result = whisperx.assign_word_speakers(diarize_segments, result)
         
         # Clear diarization model
         del diarize_model
         clear_gpu_memory()
         
-        # Build speaker name mapping from user input
-        speaker_name_map = {}
-        if speaker_names:
-            for i, info in enumerate(speaker_names):
-                name = info.get('name', '').strip()
-                position = info.get('position', '').strip()
-                if name:
-                    generic_label = f"คนพูด {i + 1}"
-                    display_name = f"{name} ({position})" if position else name
-                    speaker_name_map[generic_label] = display_name
-        
-        # Build speaker summary and transcript with speaker labels
+        # Build speaker summary and transcript with generic speaker labels
         segments = sorted(result.get('segments', []), key=lambda x: x['start'])
         speakers_time = {}
         speakers_words = {}
@@ -164,24 +188,35 @@ class TranscribeSummaryPipeline:
         
         for segment in segments:
             speaker = format_speaker(segment.get('speaker'))
-            # Replace generic label with user-provided name
-            display_speaker = speaker_name_map.get(speaker, speaker)
-            # Update the segment speaker to display name
-            segment['speaker'] = display_speaker
+            # Keep generic labels (คนพูด 1, คนพูด 2, ...)
+            segment['speaker'] = speaker
             
             duration = segment['end'] - segment['start']
             text = segment.get('text', '').strip()
             word_count = len(text.split())
-            speakers_time[display_speaker] = speakers_time.get(display_speaker, 0) + duration
-            speakers_words[display_speaker] = speakers_words.get(display_speaker, 0) + word_count
+            speakers_time[speaker] = speakers_time.get(speaker, 0) + duration
+            speakers_words[speaker] = speakers_words.get(speaker, 0) + word_count
             # Build transcript with speaker labels
-            transcript_lines.append(f"[{display_speaker}]: {text}")
+            transcript_lines.append(f"[{speaker}]: {text}")
         
         transcript_with_speakers = "\n".join(transcript_lines)
         speaker_summary = {
             'speaking_time': speakers_time,
             'word_count': speakers_words,
         }
+        
+        # Step 4: Extract audio clips per speaker (~10s each)
+        print("🔊 Extracting speaker audio clips...")
+        clip_start = time.time()
+        clip_dir = tempfile.mkdtemp(prefix="speaker_clips_")
+        speaker_clips = extract_speaker_clips(
+            audio_file=audio_file,
+            segments=segments,
+            clip_dir=clip_dir,
+            target_duration=10.0
+        )
+        clip_time = time.time() - clip_start
+        print(f"   ⏱️ Clip extraction: {clip_time:.2f}s")
         
         # Step 3: Run summary with diarization data
         meeting_info = MEETING_TYPES.get(meeting_type_id, MEETING_TYPES[0])
@@ -208,8 +243,10 @@ class TranscribeSummaryPipeline:
                 'model_load': self.timing.get('model_load', 0),
                 'audio_load': audio_time,
                 'transcription': trans_time,
+                'alignment': align_time,
                 'diarization': diarize_time,
                 'summarization': summary_time,
+                'clip_extraction': clip_time,
                 'total': total_time,
             },
             'audio_length_seconds': audio_length,
@@ -221,6 +258,8 @@ class TranscribeSummaryPipeline:
                 'speaker_summary': speaker_summary,
             },
             'summary': summary_text,
+            'speaker_clips': speaker_clips,
+            'clip_dir': clip_dir,
         }
         
         return output
@@ -236,6 +275,7 @@ class TranscribeSummaryPipeline:
         print(f"   - Model load: {pt['model_load']:.2f}s")
         print(f"   - Audio load: {pt['audio_load']:.2f}s")
         print(f"   - Transcription: {pt['transcription']:.2f}s")
+        print(f"   - Alignment: {pt.get('alignment', 0):.2f}s")
         print(f"   - Diarization: {pt['diarization']:.2f}s")
         print(f"   - Summarization: {pt['summarization']:.2f}s")
         print(f"   - Audio length: {output['audio_length_seconds']:.1f}s")
