@@ -147,7 +147,7 @@ function App() {
         <div className="app-container">
             {/* Header */}
             <header className="header">
-                <h1 className="header-title">🎙️ Transcribe-Summary</h1>
+                <h1 className="header-title">🎙️ Timsum</h1>
                 <p className="header-subtitle">ถอดเสียงประชุมและสรุปอัตโนมัติด้วย AI</p>
             </header>
 
